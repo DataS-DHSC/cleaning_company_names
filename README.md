@@ -3,7 +3,7 @@ A basic approach for cleaning messy company name data. By no means a final and o
 **High-level process**
 1. Initial text processing e.g. make names lowercase, remove additional whitespace, remove specified stop words.
 2. Fuzzy matches the names on themselves to identify possible matches.
-3. Checking whether these matches are phonetically similar increase the confidence of a correct match.
+3. Checking whether these matches are phonetically similar to increase the confidence of a correct match.
 4. For each match that meets the benchmark, return the original name that has the largest level of spend.
 5. Export the results to Excel for manual review (if needed).
 
