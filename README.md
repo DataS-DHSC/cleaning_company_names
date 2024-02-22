@@ -7,4 +7,4 @@ A basic approach for cleaning messy company name data. By no means a final and o
 4. For each match that meets the benchmark, return the original name that has the largest level of spend.
 5. Export the results to Excel for manual review (if needed).
 
-Running this code on the example data cleans the original 12 variations of 'Amazon' to five names. These could then be cleaned further, for example by adding additional stop words.
+Running this code on the example data cleans the original 12 variations of 'Amazon' to five names. These could then be cleaned further, for example by adding additional stop words. This process will never clean everything perfectly, but it is an improvement from the starting point.
