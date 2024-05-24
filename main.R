@@ -6,7 +6,7 @@ pacman::p_load(readxl, dplyr, stringi, fuzzyjoin, stringr, stringdist, writexl)
 
 # loading example data ----------------------------------------------------
 
-companies <- read_xlsx("./example_data/amazon_example.xlsx", trim_ws = FALSE)
+companies <- read_xlsx("./example_data/example_data.xlsx", trim_ws = FALSE)
 
 # basic initial cleaning --------------------------------------------------
 
@@ -28,12 +28,12 @@ unique_names$company_name_clean <- str_squish(unique_names$company_name_clean)
 
 # removing punctuation
 unique_names$company_name_clean <- str_replace_all(unique_names$company_name_clean,
-                                          "[[:punct:]]",
-                                          " ")
+                                                   "[[:punct:]]",
+                                                   " ")
 
 # removing non-ascii characters
 unique_names$company_name_clean <- stri_trans_general(unique_names$company_name_clean,
-                                             "latin-ascii")
+                                                      "latin-ascii")
 
 
 # reviewing the dataset might reveal common stop words that you know can be cleaned
@@ -41,8 +41,8 @@ stop_words <- c("uk", "co", "ltd", "limited", "corp")
 
 # finding stop words and removing
 unique_names$company_name_clean <- gsub(paste0("\\b", stop_words, "\\b", collapse = "|"),
-                               "",
-                               unique_names$company_name_clean)
+                                        "",
+                                        unique_names$company_name_clean)
 
 unique_names$company_name_clean <- str_squish(unique_names$company_name_clean)
 
@@ -56,23 +56,31 @@ unique_names_fuzzy <- unique_names |>
   ungroup()
 
 # fuzzy matching the name column on itself
-# accept ties as otherwise it just picks the first (alphabetical) which is arbitrary
 # max_dist set at appropriate level for dataset
-
+# if no matches are found (the only match is on itself) then is kept in the record
 unique_names_fuzzy <- unique_names_fuzzy |>
   stringdist_inner_join(unique_names_fuzzy,
                         max_dist = 0.30,
                         distance_col = "distance",
                         method = "jw",
                         by = c(company_name_clean = "company_name_clean")) |>
-  filter(distance != 0) |>
   rename(company_name_clean = "company_name_clean.x",
          company_name_clean_spend = "spend.x",
          company_name_clean_match = "company_name_clean.y",
-         company_name_clean_match_spend = "spend.y")
+         company_name_clean_match_spend = "spend.y") |>
+  arrange(company_name_clean, distance, company_name_clean_match) |>
+  group_by(company_name_clean) |>
+  mutate(no_match = length(unique(company_name_clean_match[distance != 0])) == 0) |>
+  ungroup() |>
+  filter(distance != 0 | no_match == TRUE)
+
+# adding phonetic matching to increase confidence in matching
+unique_names_fuzzy$company_name_clean_phon <- phonetic(unique_names_fuzzy$company_name_clean)
+unique_names_fuzzy$company_name_clean_match_phon <- phonetic(unique_names_fuzzy$company_name_clean_match)
 
 # taking the best match if there is only one
 # some names may get matched to multiple other names with the exact same distance
+# accept ties as otherwise it just picks the first (alphabetical) which is arbitrary
 unique_names_fuzzy <- unique_names_fuzzy |>
   group_by(company_name_clean) |>
   slice_min(order_by = distance,
@@ -82,39 +90,27 @@ unique_names_fuzzy <- unique_names_fuzzy |>
   ungroup() |>
   select(c(company_name_clean, company_name_clean_spend,
            company_name_clean_match, company_name_clean_match_spend,
-           distance, single_match)) |>
-  arrange(distance)
-
-# adding phonetic matching to increase confidence in matching
-unique_names_fuzzy$company_name_clean_phon <- phonetic(unique_names_fuzzy$company_name_clean)
-unique_names_fuzzy$company_name_clean_match_phon <- phonetic(unique_names_fuzzy$company_name_clean_match)
+           distance, single_match, company_name_clean_phon, company_name_clean_match_phon)) |>
+  arrange(company_name_clean, distance)
 
 # logic for accepting the match
 unique_names_fuzzy <- unique_names_fuzzy |>
   mutate(
     accept_match = case_when(
       (single_match == TRUE) & (distance < 0.05) ~ TRUE,
-      (single_match == TRUE) & (company_name_clean_phon == company_name_clean_match_phon) & (distance < 0.10) ~ TRUE,
-      distance >= 0.05 ~ FALSE)
+      (company_name_clean_phon == company_name_clean_match_phon) & (distance < 0.10) ~ TRUE,
+      .default = FALSE)
   )
 
-# if there is more than one match with distance below 0.05, take the name with the largest spend
-# may not be needed (as in this example dataset)
-unique_names_single_match <- unique_names_fuzzy |>
-  filter(is.na(accept_match)) |>
+# if there is more than one equal match (same distance and both or neither phonetically identical)
+# take the name with the largest spend
+unique_names_fuzzy <- unique_names_fuzzy |>
+  filter(single_match == TRUE | accept_match == TRUE) |>
   group_by(company_name_clean) |>
   slice_max(order_by = company_name_clean_match_spend,
             n = 1,
             with_ties = FALSE) |>
-  mutate(single_match = TRUE,
-         accept_match = TRUE) |>
   ungroup()
-
-# joining the single match names to the full matched list
-unique_names_fuzzy <- unique_names_fuzzy |>
-  filter(!(is.na(accept_match))) |>
-  rbind(unique_names_single_match) |>
-  arrange(distance)
 
 # reviewing the matches and taking the final name that is largest
 # if a large name is matched to a small name, the small name is absorbed into the large name
@@ -131,20 +127,9 @@ unique_names_fuzzy <- unique_names_fuzzy |>
   select(c(company_name_clean, company_name_clean_final)) |>
   distinct()
 
-# add back in the names that weren't matched at all because of the max_dist
-unique_names_fuzzy <- right_join(x = unique_names_fuzzy,
-                                 y = unique_names,
-                                 by = "company_name_clean") |>
-  select(c(company_name_clean, company_name_clean_final)) |>
-  mutate(company_name_clean_final = if_else(is.na(company_name_clean_final),
-                                   company_name_clean,
-                                   company_name_clean_final)) |>
-  distinct()
-
 # joining the matched names on themselves to follow the chain of matches
-# e.g. if 'health care' is matched to 'healthcare21' and 'healthcare21' is separately matched to 'healthcare 21'
-# we want 'health care' to follow the chain and be matched to the final/largest value i.e. 'healthcare 21'
-# not an issue in the example data but kept in for reference
+# e.g. if 'amazing' is matched to 'amazn' and 'amazn' is separately matched to 'amazon'
+# we want 'amazing' to follow the chain and be matched to the final/largest value i.e. 'amazon'
 unique_names_fuzzy <- left_join(x = unique_names_fuzzy,
                                 y = unique_names_fuzzy,
                                 by = c("company_name_clean_final" = "company_name_clean")) |>
@@ -152,7 +137,7 @@ unique_names_fuzzy <- left_join(x = unique_names_fuzzy,
   rename("company_name_clean_final" = "company_name_clean_final.y") |>
   distinct()
 
-# joining back up with original list so that can manually review
+# joining back up with original list
 unique_names <- left_join(x = unique_names,
                           y = unique_names_fuzzy,
                           by = "company_name_clean") |>
@@ -170,7 +155,6 @@ unique_names_for_review <- unique_names_for_review |>
   group_by(company_name_clean_final) |>
   mutate(suggested_match = company_name[which.max(spend)]) |>
   ungroup() |>
-  mutate(decision = NA) |>
   arrange(suggested_match)
 
 # exporting Excel file for review (if needed)
